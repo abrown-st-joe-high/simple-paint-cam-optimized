@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Simple Paint</title>
+<style>
+:root{--bg:#f4f4f6;--panel:#fff;--ink:#1c1c20;--line:#d4d4da;--accent:#3b6cf6}
+@media (prefers-color-scheme:dark){:root{--bg:#18181b;--panel:#242428;--ink:#ececf0;--line:#3a3a40;--accent:#7a9bff}}
+*{box-sizing:border-box}
+body{margin:0;font:14px system-ui,sans-serif;background:var(--bg);color:var(--ink)}
+header{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:8px 12px;background:var(--panel);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}
+.grp{display:flex;gap:4px;align-items:center;padding-right:8px;border-right:1px solid var(--line)}
+.grp:last-child{border:0}
+button,select{font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:5px 9px;cursor:pointer}
+button.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+button:disabled{opacity:.4;cursor:default}
+input[type=color]{width:34px;height:30px;padding:0;border:1px solid var(--line);border-radius:6px;background:none}
+label{display:flex;align-items:center;gap:4px}
+main{padding:12px;max-width:960px;margin:0 auto}
+.wrap{position:relative;line-height:0}
+canvas{width:100%;height:auto;background:#fff;border:1px solid var(--line);border-radius:6px;touch-action:none;cursor:crosshair}
+#tin{position:absolute;display:none;border:1px dashed var(--accent);background:rgba(255,255,255,.85);color:#000;font-family:sans-serif;padding:0;outline:0;min-width:120px;line-height:1.2}
+#hint{margin:8px 0;color:var(--ink);opacity:.7}
+h2{font-size:15px;margin:16px 0 6px}
+#hist{display:flex;flex-wrap:wrap;gap:10px}
+.item{position:relative;border:1px solid var(--line);border-radius:6px;background:var(--panel);padding:4px;cursor:pointer;width:158px}
+.item img{width:100%;display:block;border-radius:4px;background:#fff}
+.item small{display:block;margin-top:3px;opacity:.7}
+.item .x{position:absolute;top:6px;right:6px;padding:0 6px}
+</style>
+</head>
+<body>
+<header>
+  <div class="grp">
+    <button id="mRaster" class="on" title="Draws pixels. Cannot be edited later.">Raster</button>
+    <button id="mObj" title="Shapes stay editable: select, move, delete.">Objects</button>
+  </div>
+  <div class="grp" id="tools">
+    <button data-t="pen" class="on">Pen</button>
+    <button data-t="line">Line</button>
+    <button data-t="rect">Rect</button>
+    <button data-t="ell">Ellipse</button>
+    <button data-t="text">Text</button>
+    <button data-t="eraser">Eraser</button>
+    <button data-t="select" id="selBtn" style="display:none">Select</button>
+  </div>
+  <div class="grp">
+    <input type="color" id="col" value="#1c1c20" title="Color">
+    <label>Size <input type="range" id="size" min="1" max="40" value="4"></label>
+    <label><input type="checkbox" id="fill"> Fill</label>
+  </div>
+  <div class="grp">
+    <label title="For trackpad drag lock: double-click and drag to draw, and the pen lifts by itself when you pause, so no third click is needed."><input type="checkbox" id="mac"> Mac mode</label>
+    <label id="lagL" style="display:none">Lift after <select id="lag"><option value="250">0.25s</option><option value="400" selected>0.4s</option><option value="700">0.7s</option><option value="1000">1s</option></select></label>
+  </div>
+  <div class="grp">
+    <button id="undo">Undo</button>
+    <button id="redo">Redo</button>
+    <button id="del" style="display:none">Delete</button>
+    <button id="clear">Clear</button>
+  </div>
+  <div class="grp">
+    <button id="save">Save to history</button>
+    <button id="dl">Download PNG</button>
+  </div>
+</header>
+<main>
+  <div class="wrap">
+    <canvas id="c" width="900" height="600"></canvas>
+    <input id="tin" type="text">
+  </div>
+  <div id="hint"></div>
+  <h2>Saved history <small id="count"></small></h2>
+  <div id="hist"></div>
+</main>
+<script>
+const W=900,H=600,KEY='simplepaint.history.v1',MAXH=12;
+const cv=document.getElementById('c'),ctx=cv.getContext('2d');
+const rast=document.createElement('canvas');rast.width=W;rast.height=H;
+const rc=rast.getContext('2d');
+const $=id=>document.getElementById(id);
+let mode='raster',tool='pen',objs=[],sel=null,draft=null,start=null,drag=null;
+let undoS=[],redoS=[];
+rc.fillStyle='#fff';rc.fillRect(0,0,W,H);
+
+const fsize=o=>o.s;
+function drawObj(g,o){
+  g.save();g.lineCap=g.lineJoin='round';g.strokeStyle=g.fillStyle=o.c;g.lineWidth=o.w;
+  if(o.t==='pen'){
+    g.beginPath();g.moveTo(o.pts[0][0],o.pts[0][1]);
+    if(o.pts.length===1)g.lineTo(o.pts[0][0]+.1,o.pts[0][1]);
+    for(const p of o.pts)g.lineTo(p[0],p[1]);
+    g.stroke();
+  }else if(o.t==='line'){g.beginPath();g.moveTo(o.x,o.y);g.lineTo(o.x2,o.y2);g.stroke();}
+  else if(o.t==='rect'){o.f?g.fillRect(o.x,o.y,o.x2-o.x,o.y2-o.y):g.strokeRect(o.x,o.y,o.x2-o.x,o.y2-o.y);}
+  else if(o.t==='ell'){g.beginPath();g.ellipse((o.x+o.x2)/2,(o.y+o.y2)/2,Math.abs(o.x2-o.x)/2,Math.abs(o.y2-o.y)/2,0,0,7);o.f?g.fill():g.stroke();}
+  else if(o.t==='text'){g.font=o.s+'px sans-serif';g.textBaseline='top';g.fillText(o.txt,o.x,o.y);}
+  g.restore();
+}
+function bbox(o){
+  if(o.t==='pen'){const xs=o.pts.map(p=>p[0]),ys=o.pts.map(p=>p[1]),m=o.w/2;
+    return [Math.min(...xs)-m,Math.min(...ys)-m,Math.max(...xs)+m,Math.max(...ys)+m];}
+  if(o.t==='text'){ctx.font=o.s+'px sans-serif';return [o.x,o.y,o.x+ctx.measureText(o.txt).width,o.y+o.s*1.2];}
+  const m=o.w/2;return [Math.min(o.x,o.x2)-m,Math.min(o.y,o.y2)-m,Math.max(o.x,o.x2)+m,Math.max(o.y,o.y2)+m];
+}
+function move(o,dx,dy){
+  if(o.pts)o.pts=o.pts.map(p=>[p[0]+dx,p[1]+dy]);
+  else{o.x+=dx;o.y+=dy;if(o.x2!==undefined){o.x2+=dx;o.y2+=dy;}}
+}
+function hit(x,y){
+  for(let i=objs.length-1;i>=0;i--){const b=bbox(objs[i]),p=6;
+    if(x>=b[0]-p&&x<=b[2]+p&&y>=b[1]-p&&y<=b[3]+p)return objs[i];}
+  return null;
+}
+function render(showSel=true){
+  ctx.drawImage(rast,0,0);
+  for(const o of objs)drawObj(ctx,o);
+  if(draft)drawObj(ctx,draft);
+  if(showSel&&sel){const b=bbox(sel);ctx.save();ctx.strokeStyle='#3b6cf6';ctx.lineWidth=1.5;ctx.setLineDash([5,4]);
+    ctx.strokeRect(b[0]-3,b[1]-3,b[2]-b[0]+6,b[3]-b[1]+6);ctx.restore();}
+}
+function pos(e){const r=cv.getBoundingClientRect();return [(e.clientX-r.left)*W/r.width,(e.clientY-r.top)*H/r.height];}
+
+/* undo / redo */
+function snap(){return{r:rc.getImageData(0,0,W,H),o:JSON.stringify(objs)};}
+function push(){undoS.push(snap());if(undoS.length>25)undoS.shift();redoS=[];ui();}
+function restore(s){rc.putImageData(s.r,0,0);objs=JSON.parse(s.o);sel=null;render();ui();}
+$('undo').onclick=()=>{if(!undoS.length)return;redoS.push(snap());restore(undoS.pop());};
+$('redo').onclick=()=>{if(!redoS.length)return;undoS.push(snap());restore(redoS.pop());};
+
+/* modes and tools */
+function setMode(m){
+  mode=m;sel=null;
+  $('mRaster').classList.toggle('on',m==='raster');$('mObj').classList.toggle('on',m==='objects');
+  $('selBtn').style.display=$('del').style.display=m==='objects'?'':'none';
+  if(m==='raster'&&tool==='select')setTool('pen');
+  if(objs.length&&m==='raster'&&confirmFlatten())flatten();
+  render();ui();
+}
+let askedFlatten=false;
+function confirmFlatten(){return false;}
+function flatten(){}
+$('mRaster').onclick=()=>setMode('raster');
+$('mObj').onclick=()=>setMode('objects');
+function setTool(t){
+  tool=t;finishText();
+  document.querySelectorAll('#tools button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));
+  cv.style.cursor=t==='select'?'default':t==='text'?'text':'crosshair';ui();
+}
+document.querySelectorAll('#tools button').forEach(b=>b.onclick=()=>setTool(b.dataset.t));
+function ui(){
+  $('undo').disabled=!undoS.length;$('redo').disabled=!redoS.length;
+  $('del').disabled=!sel;
+  $('hint').textContent=mode==='raster'
+    ?'Raster mode: strokes become pixels. Switch to Objects to keep shapes editable (Select tool: drag to move, Delete key removes, double-click text to edit).'
+    :'Object mode: every stroke is a separate object. Use Select to move, recolor, or delete. Eraser removes the object you click.';
+}
+$('col').oninput=()=>{if(sel){push();sel.c=$('col').value;render();}};
+$('del').onclick=()=>{if(sel){push();objs=objs.filter(o=>o!==sel);sel=null;render();ui();}};
+$('clear').onclick=()=>{if(!confirm('Clear the whole canvas?'))return;push();rc.fillStyle='#fff';rc.fillRect(0,0,W,H);objs=[];sel=null;render();};
+addEventListener('keydown',e=>{
+  if(e.target.tagName==='INPUT'&&e.target.type!=='range'&&e.target.type!=='checkbox')return;
+  if((e.key==='Delete'||e.key==='Backspace')&&sel){$('del').click();e.preventDefault();}
+  if((e.ctrlKey||e.metaKey)&&e.key==='z'){e.preventDefault();$(e.shiftKey?'redo':'undo').click();}
+});
+
+/* text typer */
+const tin=$('tin');let tpos=null;
+function openText(x,y){
+  finishText();tpos=[x,y];const r=cv.getBoundingClientRect(),k=r.width/W,s=textSize();
+  tin.style.display='block';tin.style.left=x*k+'px';tin.style.top=y*k+'px';
+  tin.style.fontSize=s*k+'px';tin.style.color=$('col').value;tin.value='';
+  setTimeout(()=>tin.focus(),0);
+}
+const textSize=()=>Math.max(12,+$('size').value*3+10);
+function finishText(){
+  if(!tpos)return;const txt=tin.value;const p=tpos;tpos=null;tin.style.display='none';
+  if(!txt.trim())return;
+  push();const o={t:'text',x:p[0],y:p[1],s:textSize(),c:$('col').value,txt,w:1};
+  if(mode==='raster')drawObj(rc,o);else objs.push(o);render();
+}
+tin.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();finishText();}if(e.key==='Escape'){tin.value='';finishText();}};
+tin.onblur=finishText;
+
+/* pointer handling */
+cv.addEventListener('pointerdown',e=>{
+  const [x,y]=pos(e);
+  if(tool==='text'){e.preventDefault();openText(x,y);return;}
+  cv.setPointerCapture(e.pointerId);start=[x,y];
+  const col=$('col').value,w=+$('size').value,f=$('fill').checked;
+  if(tool==='select'){
+    sel=hit(x,y);drag=sel?{x,y,pushed:false}:null;render();ui();
+    if(sel)$('col').value=sel.t==='text'||true?sel.c:'';return;
+  }
+  if(tool==='eraser'&&mode==='objects'){
+    const o=hit(x,y);if(o){push();objs=objs.filter(q=>q!==o);render();ui();}return;
+  }
+  const c=tool==='eraser'?'#ffffff':col;
+  if(tool==='pen'||tool==='eraser')draft={t:'pen',pts:[[x,y]],c,w:tool==='eraser'?w*3:w};
+  else if(tool==='line')draft={t:'line',x,y,x2:x,y2:y,c,w};
+  else draft={t:tool,x,y,x2:x,y2:y,c,w,f};
+  render();
+});
+cv.addEventListener('pointermove',e=>{
+  if(lifted)return;
+  const [x,y]=pos(e);
+  if(drag&&sel){
+    if(!drag.pushed){push();drag.pushed=true;}
+    move(sel,x-drag.x,y-drag.y);drag.x=x;drag.y=y;render();return;
+  }
+  if(!draft)return;
+  if(draft.t==='pen'){draft.pts.push([x,y]);}else{draft.x2=x;draft.y2=y;}
+  render();
+});
+/* Mac mode: a trackpad drag lock keeps the button held until a third tap.
+   Here the stroke ends on its own once the pointer pauses, then ignores
+   movement until the next press. */
+let lifted=false,idleT=null;
+const MACKEY='simplepaint.mac';
+function armIdle(){
+  clearTimeout(idleT);
+  if($('mac').checked&&(draft||drag))idleT=setTimeout(()=>{endDraw();lifted=true;},+$('lag').value);
+}
+function endDraw(){
+  clearTimeout(idleT);
+  drag=null;
+  if(!draft)return;
+  const d=draft;draft=null;push();
+  if(mode==='raster')drawObj(rc,d);else{objs.push(d);}
+  render();
+}
+cv.addEventListener('pointerdown',()=>{lifted=false;armIdle();});
+cv.addEventListener('pointermove',()=>{if(!lifted)armIdle();});
+cv.addEventListener('pointerup',()=>{endDraw();lifted=false;});
+cv.addEventListener('pointercancel',()=>{endDraw();lifted=false;});
+try{$('mac').checked=localStorage.getItem(MACKEY)==='1';}catch(e){}
+$('lagL').style.display=$('mac').checked?'':'none';
+$('mac').onchange=()=>{
+  $('lagL').style.display=$('mac').checked?'':'none';
+  try{localStorage.setItem(MACKEY,$('mac').checked?'1':'0');}catch(e){}
+  if(!$('mac').checked)clearTimeout(idleT);
+};
+cv.addEventListener('dblclick',e=>{
+  if(mode!=='objects'||tool!=='select')return;
+  const [x,y]=pos(e),o=hit(x,y);
+  if(o&&o.t==='text'){const n=prompt('Edit text:',o.txt);if(n!==null&&n.trim()){push();o.txt=n;render();}}
+});
+
+/* history (localStorage) */
+function loadHist(){try{return JSON.parse(localStorage.getItem(KEY))||[];}catch(e){return[];}}
+function storeHist(h){
+  while(h.length){try{localStorage.setItem(KEY,JSON.stringify(h));return true;}catch(e){h.pop();}}
+  return false;
+}
+function flat(showSel){render(showSel);return cv.toDataURL('image/png');}
+$('save').onclick=()=>{
+  sel=null;render(false);
+  const t=document.createElement('canvas');t.width=150;t.height=100;
+  t.getContext('2d').drawImage(cv,0,0,150,100);
+  const h=loadHist();
+  h.unshift({id:Date.now(),mode,raster:rast.toDataURL('image/png'),objs,thumb:t.toDataURL('image/jpeg',.7)});
+  if(h.length>MAXH)h.length=MAXH;
+  if(!storeHist(h))alert('Could not save: browser storage is full or blocked.');
+  renderHist();render();
+};
+function renderHist(){
+  const h=loadHist(),box=$('hist');box.innerHTML='';
+  $('count').textContent=h.length?'('+h.length+', stored in this browser)':'';
+  if(!h.length){box.textContent='Nothing saved yet.';return;}
+  h.forEach(it=>{
+    const d=document.createElement('div');d.className='item';
+    const im=new Image();im.src=it.thumb;d.appendChild(im);
+    const s=document.createElement('small');s.textContent=new Date(it.id).toLocaleString()+' · '+it.mode;d.appendChild(s);
+    const x=document.createElement('button');x.className='x';x.textContent='×';x.title='Delete';
+    x.onclick=ev=>{ev.stopPropagation();storeHist(loadHist().filter(q=>q.id!==it.id));renderHist();};
+    d.appendChild(x);
+    d.onclick=()=>{
+      const img=new Image();
+      img.onload=()=>{push();rc.drawImage(img,0,0);objs=it.objs||[];sel=null;setMode(it.mode);render();};
+      img.src=it.raster;
+      rc.fillStyle='#fff';
+    };
+    box.appendChild(d);
+  });
+}
+$('dl').onclick=()=>{
+  const prev=sel;sel=null;render(false);
+  const a=document.createElement('a');a.download='drawing-'+Date.now()+'.png';a.href=cv.toDataURL('image/png');a.click();
+  sel=prev;render();
+};
+render();ui();renderHist();
+</script>
+</body>
+</html>
